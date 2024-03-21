@@ -1,125 +1,117 @@
-name: Release LITIENGINE
-
-on:
-  push:
-    tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
-  workflow_dispatch:
-    inputs:
-      incrementVersion:
-        type: choice
-        description: "increment version?"
-        required: true
-        default: 'none'
-        options:
-          - none
-          - patch
-          - minor
-          - major
-  schedule:
-    # Midnight every day
-    - cron: "0 0 * * *"
-permissions:
-  contents: write
-
 jobs:
+  package:
+    if: inputs.incrementVersion != 'none' && inputs.incrementVersion != ''
+    name: Package distribution
+    needs: release
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - continue-on-error: true
+      name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 21
+    - continue-on-error: true
+      name: Setup Gradle
+      uses: gradle/gradle-build-action@v2
+    - continue-on-error: true
+      name: Package
+      run: ./gradlew jpackage -Prelease=true
+    - continue-on-error: true
+      name: Upload package
+      uses: actions/upload-artifact@v4
+      with:
+        name: utiLITI-${{ runner.os }}
+        path: utiliti/build/jpackage
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - macos-latest
+        - windows-latest
   release:
     name: Release build
-    runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: read
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4.1.0
-        with:
-          fetch-depth: 0
+    - continue-on-error: true
+      uses: actions/checkout@v4.1.0
+      with:
+        fetch-depth: 0
+    - continue-on-error: true
+      name: JDK Setup
+      uses: actions/setup-java@v3.13.0
+      with:
+        distribution: temurin
+        java-version: 21
+    - continue-on-error: true
+      name: Gradle Setup
+      uses: gradle/gradle-build-action@v2
+    - continue-on-error: true
+      env:
+        GRGIT_USER: ${{ secrets.GITHUB_TOKEN }}
+      if: inputs.incrementVersion != 'none' && inputs.incrementVersion != ''
+      name: Increment version
+      run: './gradlew incrementVersion --increment=${{inputs.incrementVersion}}
 
-      - name: JDK Setup
-        uses: actions/setup-java@v3.13.0
-        with:
-          distribution: temurin
-          java-version: 21
+        ./gradlew pushTags
 
-      - name: Gradle Setup
-        uses: gradle/gradle-build-action@v2
+        latest_tag=$(git describe --tags --abbrev=0)
 
-      - name: Increment version
-        if: inputs.incrementVersion != 'none' && inputs.incrementVersion != ''
-        env:
-          GRGIT_USER: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          ./gradlew incrementVersion --increment=${{inputs.incrementVersion}}
-          ./gradlew pushTags
-          latest_tag=$(git describe --tags --abbrev=0)
-          echo "RELEASE_VERSION=$latest_tag" >> "$GITHUB_ENV"
+        echo "RELEASE_VERSION=$latest_tag" >> "$GITHUB_ENV"
 
-      - name: Publish Snapshot
-        if: inputs.incrementVersion == 'none' || inputs.incrementVersion == ''
-        env:
-          ORG_GRADLE_PROJECT_sonatypeUsername: ${{ secrets.OSSRH_USERNAME }}
-          ORG_GRADLE_PROJECT_sonatypePassword: ${{ secrets.OSSRH_PASSWORD }}
-          ORG_GRADLE_PROJECT_signingKey: ${{ secrets.PGP_SECRET }}
-          ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.PGP_PASSPHRASE }}
-        run: ./gradlew publishToSonatype closeSonatypeStagingRepository
+        '
+    - continue-on-error: true
+      env:
+        ORG_GRADLE_PROJECT_signingKey: ${{ secrets.PGP_SECRET }}
+        ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.PGP_PASSPHRASE }}
+        ORG_GRADLE_PROJECT_sonatypePassword: ${{ secrets.OSSRH_PASSWORD }}
+        ORG_GRADLE_PROJECT_sonatypeUsername: ${{ secrets.OSSRH_USERNAME }}
+      if: inputs.incrementVersion == 'none' || inputs.incrementVersion == ''
+      name: Publish Snapshot
+      run: ./gradlew publishToSonatype closeSonatypeStagingRepository
+    - continue-on-error: true
+      env:
+        ORG_GRADLE_PROJECT_signingKey: ${{ secrets.PGP_SECRET }}
+        ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.PGP_PASSPHRASE }}
+        ORG_GRADLE_PROJECT_sonatypePassword: ${{ secrets.OSSRH_PASSWORD }}
+        ORG_GRADLE_PROJECT_sonatypeUsername: ${{ secrets.OSSRH_USERNAME }}
+      if: inputs.incrementVersion != 'none' && inputs.incrementVersion != ''
+      name: Publish Stable
+      run: ./gradlew publishToSonatype closeAndReleaseSonatypeStagingRepository
+    - continue-on-error: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        tag: ${{ github.ref_name }}
+      if: inputs.incrementVersion != 'none' && inputs.incrementVersion != ''
+      name: Create release notes
+      run: "gh release create \"$RELEASE_VERSION\" \\\n    --repo=\"$GITHUB_REPOSITORY\"\
+        \ \\\n    --title=\"$RELEASE_VERSION\" \\\n    --generate-notes \\\n    --draft\n"
+    - continue-on-error: true
+      if: inputs.incrementVersion != 'none' && inputs.incrementVersion != ''
+      name: Announce release
+      run: 'curl -X POST -H "Authorization: Bearer ${{ secrets.MASTODON_ACCESS_TOKEN
+        }}" \
 
-      - name: Publish Stable
-        if: inputs.incrementVersion != 'none' && inputs.incrementVersion != ''
-        env:
-          ORG_GRADLE_PROJECT_sonatypeUsername: ${{ secrets.OSSRH_USERNAME }}
-          ORG_GRADLE_PROJECT_sonatypePassword: ${{ secrets.OSSRH_PASSWORD }}
-          ORG_GRADLE_PROJECT_signingKey: ${{ secrets.PGP_SECRET }}
-          ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.PGP_PASSPHRASE }}
-        run: ./gradlew publishToSonatype closeAndReleaseSonatypeStagingRepository
+        -F "status=#LITIENGINE version ${{ env.RELEASE_VERSION }} has just been released!
 
-      - name: Create release notes
-        if: inputs.incrementVersion != 'none' && inputs.incrementVersion != ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref_name }}
-        run: |
-          gh release create "$RELEASE_VERSION" \
-              --repo="$GITHUB_REPOSITORY" \
-              --title="$RELEASE_VERSION" \
-              --generate-notes \
-              --draft
+        #GameDev #indiedev #videogames #IndieGameDev
 
-      - name: Announce release
-        if: inputs.incrementVersion != 'none' && inputs.incrementVersion != ''
-        run: |
-          curl -X POST -H "Authorization: Bearer ${{ secrets.MASTODON_ACCESS_TOKEN }}" \
-          -F "status=#LITIENGINE version ${{ env.RELEASE_VERSION }} has just been released!
-          #GameDev #indiedev #videogames #IndieGameDev
-          ${{ github.server_url }}/${{ github.repository }}/releases/tag/$RELEASE_VERSION" \
-          https://fosstodon.org/api/v1/statuses
+        ${{ github.server_url }}/${{ github.repository }}/releases/tag/$RELEASE_VERSION"
+        \
 
-  package:
-    name: Package distribution
-    if: inputs.incrementVersion != 'none' && inputs.incrementVersion != ''
-    needs: release
-    strategy:
-      matrix:
-        os: [ ubuntu-latest, macos-latest, windows-latest ]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        https://fosstodon.org/api/v1/statuses
 
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-
-      - name: Setup Gradle
-        uses: gradle/gradle-build-action@v2
-
-      - name: Package
-        run: ./gradlew jpackage -Prelease=true
-
-      - name: Upload package
-        uses: actions/upload-artifact@v4
-        with:
-          name: utiLITI-${{ runner.os }}
-          path: utiliti/build/jpackage
-      # TODO consider uploading the artifacts to itch.io automatically with butler, https://github.com/jdno/setup-butler
+        '
+name: Release LITIENGINE
+on:
+  repository_dispatch:
+    types: trigger-ga___release.yml
+permissions:
+  contents: write
